@@ -1,0 +1,128 @@
+version: "3.8"
+
+services:
+  # Aplicação principal
+  app:
+    build: .
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    environment:
+      # Banco de dados (configurável via .env)
+      - DATABASE_TYPE=${DOCKER_DATABASE_TYPE:-postgresql}
+      
+      # URLs dos bancos Docker
+      - ORACLE_URL=oracle+cx_oracle://${ORACLE_DOCKER_USER:-system}:${ORACLE_DOCKER_PASSWORD:-oracle}@${ORACLE_DOCKER_HOST:-db-oracle}:${ORACLE_DOCKER_PORT:-1521}/${ORACLE_DOCKER_SERVICE:-XE}
+      - POSTGRESQL_URL=postgresql://${POSTGRESQL_DOCKER_USER:-postgres}:${POSTGRESQL_DOCKER_PASSWORD:-1234}@${POSTGRESQL_DOCKER_HOST:-db-postgresql}:${POSTGRESQL_DOCKER_PORT:-5432}/${POSTGRESQL_DOCKER_DB:-agendamento_consultas}
+      - FIREBIRD_URL=firebird://${FIREBIRD_DOCKER_USER:-SYSDBA}:${FIREBIRD_DOCKER_PASSWORD:-masterkey}@${FIREBIRD_DOCKER_HOST:-db-firebird}:${FIREBIRD_DOCKER_PORT:-3050}/${FIREBIRD_DOCKER_DB:-hospital_db}
+      
+      # URL genérica baseada na escolha
+      - DATABASE_URL=${DATABASE_URL}
+      
+      # Botconversa
+      - BOTCONVERSA_API_URL=${BOTCONVERSA_API_URL}
+      - BOTCONVERSA_API_KEY=${BOTCONVERSA_API_KEY}
+      - BOTCONVERSA_WEBHOOK_SECRET=${BOTCONVERSA_WEBHOOK_SECRET}
+      
+      # Hospital
+      - HOSPITAL_NAME=${HOSPITAL_NAME}
+      - HOSPITAL_PHONE=${HOSPITAL_PHONE}
+      - HOSPITAL_ADDRESS=${HOSPITAL_ADDRESS}
+      - HOSPITAL_CITY=${HOSPITAL_CITY}
+      - HOSPITAL_STATE=${HOSPITAL_STATE}
+      
+      # Webhook
+      - WEBHOOK_HOST=0.0.0.0
+      - WEBHOOK_PORT=8000
+      - WEBHOOK_URL=${WEBHOOK_URL}
+      
+      # Aplicação
+      - DEBUG=${DEBUG}
+      - LOG_LEVEL=${LOG_LEVEL}
+      - MAX_WORKERS=${MAX_WORKERS:-4}
+      - WORKER_TIMEOUT=${WORKER_TIMEOUT:-30}
+      
+      # Agendamento
+      - MIN_ADVANCE_BOOKING_HOURS=${MIN_ADVANCE_BOOKING_HOURS:-24}
+      - MAX_ADVANCE_BOOKING_DAYS=${MAX_ADVANCE_BOOKING_DAYS:-90}
+      - DEFAULT_CONSULTATION_DURATION_MINUTES=${DEFAULT_CONSULTATION_DURATION_MINUTES:-30}
+      - CONSULTATION_INTERVAL_MINUTES=${CONSULTATION_INTERVAL_MINUTES:-30}
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      - db-oracle
+      - db-postgresql
+      - db-firebird
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Banco Oracle
+  db-oracle:
+    image: container-registry.oracle.com/database/express:21.3.0-xe
+    environment:
+      - ORACLE_PWD=${ORACLE_DOCKER_PASSWORD:-oracle}
+      - ORACLE_CHARACTERSET=AL32UTF8
+    volumes:
+      - oracle_data:/opt/oracle/oradata
+    ports:
+      - "${ORACLE_DOCKER_PORT:-1521}:1521"
+    restart: unless-stopped
+    profiles:
+      - oracle
+    healthcheck:
+      test: ["CMD", "sqlplus", "-L", "${ORACLE_DOCKER_USER:-system}/${ORACLE_DOCKER_PASSWORD:-oracle}@//localhost:${ORACLE_DOCKER_PORT:-1521}/${ORACLE_DOCKER_SERVICE:-XE}", "-c", "SELECT 1 FROM DUAL"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  # Banco PostgreSQL
+  db-postgresql:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=${POSTGRESQL_DOCKER_DB:-agendamento_consultas}
+      - POSTGRES_USER=${POSTGRESQL_DOCKER_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRESQL_DOCKER_PASSWORD:-1234}
+    volumes:
+      - postgresql_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRESQL_DOCKER_PORT:-5432}:5432"
+    restart: unless-stopped
+    profiles:
+      - postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRESQL_DOCKER_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Banco Firebird
+  db-firebird:
+    image: jacobalberty/firebird:3.0
+    environment:
+      - FIREBIRD_DATABASE=${FIREBIRD_DOCKER_DB:-hospital_db}
+      - FIREBIRD_USER=${FIREBIRD_DOCKER_USER:-SYSDBA}
+      - FIREBIRD_PASSWORD=${FIREBIRD_DOCKER_PASSWORD:-masterkey}
+    volumes:
+      - firebird_data:/firebird/data
+    ports:
+      - "${FIREBIRD_DOCKER_PORT:-3050}:3050"
+    restart: unless-stopped
+    profiles:
+      - firebird
+    healthcheck:
+      test: ["CMD", "gds_db_info", "-user", "${FIREBIRD_DOCKER_USER:-SYSDBA}", "-password", "${FIREBIRD_DOCKER_PASSWORD:-masterkey}", "-database", "localhost:${FIREBIRD_DOCKER_PORT:-3050}/${FIREBIRD_DOCKER_DB:-hospital_db}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  oracle_data:
+  postgresql_data:
+  firebird_data:
+
