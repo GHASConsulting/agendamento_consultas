@@ -565,7 +565,8 @@ async def criar_agendamento_botconversa(
     )
 
     try:
-        from app.database.models import Medico, Especialidade
+        from app.database.models import Medico, Especialidade, Agendamento, StatusAgendamento
+        from sqlalchemy import and_
 
         # Busca ou cria paciente
         logger.debug(
@@ -692,6 +693,38 @@ async def criar_agendamento_botconversa(
         agendamento = agendamento_service.criar_agendamento(agendamento_dados)
 
         if not agendamento:
+            # Revalida para determinar o motivo específico
+            fim_consulta = agendamento_data.data_hora + timedelta(minutes=agendamento_data.duracao_minutos or 30)
+            conflito_existente = (
+                db.query(Agendamento)
+                .filter(
+                    and_(
+                        Agendamento.medico_id == agendamento_data.medico_id,
+                        Agendamento.status.in_([StatusAgendamento.AGENDADO, StatusAgendamento.CONFIRMADO]),
+                        Agendamento.data_hora < fim_consulta,
+                    )
+                )
+                .first()
+            )
+            
+            if conflito_existente:
+                # Verifica se há sobreposição real
+                fim_conflito = conflito_existente.data_hora + timedelta(minutes=conflito_existente.duracao_minutos)
+                if (
+                    (conflito_existente.data_hora <= agendamento_data.data_hora < fim_conflito)
+                    or (conflito_existente.data_hora < fim_consulta <= fim_conflito)
+                    or (agendamento_data.data_hora <= conflito_existente.data_hora < fim_consulta)
+                ):
+                    logger.warning(
+                        f"[BOTCONVERSA] Horário já ocupado | paciente_id={paciente.id} | "
+                        f"medico_id={agendamento_data.medico_id} | data_hora={agendamento_data.data_hora} | "
+                        f"conflito_com_agendamento_id={conflito_existente.id}"
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=f"Este horário já está ocupado. Por favor, escolha outro horário disponível.",
+                    )
+            
             logger.warning(
                 f"[BOTCONVERSA] Falha ao criar agendamento | paciente_id={paciente.id} | "
                 f"medico_id={agendamento_data.medico_id} | data_hora={agendamento_data.data_hora} | "

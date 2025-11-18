@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, date
 from loguru import logger
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
+from sqlalchemy.exc import IntegrityError
 
 from app.database.models import (
     Agendamento,
@@ -72,15 +73,45 @@ class AgendamentoService:
             )
 
             self.db.add(agendamento)
-            self.db.commit()
-            self.db.refresh(agendamento)
+            
+            try:
+                self.db.commit()
+                self.db.refresh(agendamento)
+                
+                # Revalida após commit para detectar race conditions
+                # (caso outro agendamento tenha sido criado entre a validação e o commit)
+                if not self._validar_disponibilidade(medico_id, data_hora, duracao_minutos, excluir_agendamento_id=agendamento.id):
+                    # Se após criar ainda há conflito, significa que criamos um duplicado
+                    logger.warning(
+                        f"Conflito detectado após criação - possível race condition | "
+                        f"agendamento_id={agendamento.id} | medico_id={medico_id} | data_hora={data_hora}"
+                    )
+                    # Remove o agendamento duplicado
+                    self.db.delete(agendamento)
+                    self.db.commit()
+                    return None
 
-            logger.success(
-                f"Agendamento criado com sucesso | agendamento_id={agendamento.id} | "
-                f"paciente_id={paciente_id} | medico_id={medico_id} | "
-                f"data_hora={data_hora} | status={agendamento.status.value}"
-            )
-            return agendamento
+                logger.success(
+                    f"Agendamento criado com sucesso | agendamento_id={agendamento.id} | "
+                    f"paciente_id={paciente_id} | medico_id={medico_id} | "
+                    f"data_hora={data_hora} | status={agendamento.status.value}"
+                )
+                return agendamento
+                
+            except IntegrityError as e:
+                # Erro de constraint única (Oracle/PostgreSQL) - horário já ocupado
+                self.db.rollback()
+                logger.warning(
+                    f"Conflito de integridade detectado - horário já ocupado | "
+                    f"medico_id={medico_id} | data_hora={data_hora} | erro={str(e)}"
+                )
+                # Revalida para confirmar que realmente está ocupado
+                if not self._validar_disponibilidade(medico_id, data_hora, duracao_minutos):
+                    logger.info(
+                        f"Confirmação: horário realmente está ocupado | "
+                        f"medico_id={medico_id} | data_hora={data_hora}"
+                    )
+                return None
 
         except KeyError as e:
             logger.error(
@@ -185,7 +216,7 @@ class AgendamentoService:
             return []
 
     def _validar_disponibilidade(
-        self, medico_id: int, data_hora: datetime, duracao_minutos: int
+        self, medico_id: int, data_hora: datetime, duracao_minutos: int, excluir_agendamento_id: Optional[int] = None
     ) -> bool:
         """
         Valida se um horário está disponível para agendamento.
@@ -300,20 +331,24 @@ class AgendamentoService:
             fim_consulta = data_hora + timedelta(minutes=duracao_minutos)
             
             # Busca agendamentos que podem conflitar
+            filtros = [
+                Agendamento.medico_id == medico_id,
+                Agendamento.status.in_(
+                    [
+                        StatusAgendamento.AGENDADO,
+                        StatusAgendamento.CONFIRMADO,
+                    ]
+                ),
+                Agendamento.data_hora < fim_consulta,
+            ]
+            
+            # Exclui um agendamento específico da validação (útil para revalidação após criação)
+            if excluir_agendamento_id is not None:
+                filtros.append(Agendamento.id != excluir_agendamento_id)
+            
             agendamentos_existentes = (
                 self.db.query(Agendamento)
-                .filter(
-                    and_(
-                        Agendamento.medico_id == medico_id,
-                        Agendamento.status.in_(
-                            [
-                                StatusAgendamento.AGENDADO,
-                                StatusAgendamento.CONFIRMADO,
-                            ]
-                        ),
-                        Agendamento.data_hora < fim_consulta,
-                    )
-                )
+                .filter(and_(*filtros))
                 .all()
             )
             
