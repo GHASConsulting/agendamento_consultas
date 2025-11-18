@@ -298,7 +298,9 @@ class AgendamentoService:
 
             # Verifica conflitos com outros agendamentos
             fim_consulta = data_hora + timedelta(minutes=duracao_minutos)
-            conflitos = (
+            
+            # Busca agendamentos que podem conflitar
+            agendamentos_existentes = (
                 self.db.query(Agendamento)
                 .filter(
                     and_(
@@ -309,22 +311,26 @@ class AgendamentoService:
                                 StatusAgendamento.CONFIRMADO,
                             ]
                         ),
-                        or_(
-                            and_(
-                                Agendamento.data_hora <= data_hora,
-                                Agendamento.data_hora
-                                + timedelta(minutes=Agendamento.duracao_minutos)
-                                > data_hora,
-                            ),
-                            and_(
-                                Agendamento.data_hora < fim_consulta,
-                                Agendamento.data_hora >= data_hora,
-                            ),
-                        ),
+                        Agendamento.data_hora < fim_consulta,
                     )
                 )
-                .first()
+                .all()
             )
+            
+            # Verifica conflitos manualmente para cada agendamento
+            conflitos = None
+            for agendamento in agendamentos_existentes:
+                fim_agendamento = agendamento.data_hora + timedelta(
+                    minutes=agendamento.duracao_minutos
+                )
+                # Verifica se há sobreposição de horários
+                if (
+                    (agendamento.data_hora <= data_hora < fim_agendamento)
+                    or (agendamento.data_hora < fim_consulta <= fim_agendamento)
+                    or (data_hora <= agendamento.data_hora < fim_consulta)
+                ):
+                    conflitos = agendamento
+                    break
 
             if conflitos:
                 logger.warning(
@@ -650,4 +656,5 @@ class AgendamentoService:
                 f"especialidade_id={especialidade_id} | erro={str(e)}"
             )
             return []
+
 
